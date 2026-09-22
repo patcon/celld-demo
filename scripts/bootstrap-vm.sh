@@ -114,6 +114,11 @@ sudo -u celld "$CELLD_HOME/bin/celld" --version
 # this same metadata server. Nothing secret touches the disk.
 meta celld-env > /etc/celld.env
 echo "CELLD_WATCH=$CELLD_STATE" >> /etc/celld.env
+# Unset, celld never evicts an idle cell, so nothing goes dormant and the
+# rebalancer -- which moves only dormant cells -- never moves anything. 120s is
+# inside Cloudflare's ~70-140s idle window for a Durable Object, so cells
+# leave memory about when they would there.
+echo "CELLD_IDLE_EVICT_S=120" >> /etc/celld.env
 chmod 0640 /etc/celld.env
 chgrp celld /etc/celld.env
 sed 's/^\(AWS_SECRET_ACCESS_KEY=\).*/\1***/' /etc/celld.env
