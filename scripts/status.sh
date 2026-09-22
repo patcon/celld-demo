@@ -96,3 +96,6 @@ log_step "Bucket"
 # undeployed fleet bucket holds nothing but celld's format marker.
 echo "  total size across all objects:"
 provider_bucket_usage | sed 's/^/  /'
+echo
+echo "  by prefix:"
+provider_bucket_breakdown

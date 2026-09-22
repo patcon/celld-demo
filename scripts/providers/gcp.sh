@@ -469,6 +469,48 @@ except Exception:
 PY
 }
 
+# Size and object count per top-level prefix, with cells/ split by class. One
+# recursive listing, summed locally, rather than a du per prefix.
+provider_bucket_breakdown() {
+    gc storage ls -l -r "$CD_BUCKET/**" 2>/dev/null | python3 -c '
+import sys
+root = sys.argv[1].rstrip("/") + "/"
+# Only the prefixes whose contents are clear from what is in them; anything
+# else is still listed, just without a gloss.
+about = {
+    "cells":        "each cell: SQLite state (LTX) + ownership record",
+    "log":          "replicated write log, per node, not yet in cells/",
+    "deploy":       "Worker bundles and the current-version pointer",
+    "deploy-blobs": "static assets, content-addressed",
+    "nodes":        "node leases",
+    "fleet":        "shared capacity sample, peer auth",
+}
+sizes, counts, classes = {}, {}, {}
+for line in sys.stdin:
+    parts = line.split()
+    if len(parts) != 3 or not parts[2].startswith(root):
+        continue  # the TOTAL line, and prefix-only rows
+    size, path = int(parts[0]), parts[2][len(root):].split("/")
+    top = path[0]
+    sizes[top] = sizes.get(top, 0) + size
+    counts[top] = counts.get(top, 0) + 1
+    if top == "cells" and len(path) > 1:
+        k = path[1].split(":", 1)[0]
+        n, s = classes.get(k, (0, 0))
+        classes[k] = (n + (path[-1] == "own.json"), s + size)
+def human(n):
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if n < 1024 or unit == "GiB":
+            return ("%d %s" % (n, unit)) if unit == "B" else ("%.1f %s" % (n, unit))
+        n /= 1024.0
+for top in sorted(sizes, key=lambda t: -sizes[t]):
+    print("  %-14s %10s  %4d obj  %s" % (top + "/", human(sizes[top]), counts[top], about.get(top, "")))
+    if top == "cells":
+        for k, (n, s) in sorted(classes.items()):
+            print("    %-12s %10s  %4d cells" % (k, human(s), n))
+' "$CD_BUCKET" || echo "  (could not list $CD_BUCKET)"
+}
+
 # Everything that is not per-node. Called by destroy after the VMs are gone.
 provider_teardown() {
     local sa
