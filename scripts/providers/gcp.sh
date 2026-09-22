@@ -410,8 +410,12 @@ provider_list_nodes() {
         --format='table(name,status,machineType.basename(),networkInterfaces[0].networkIP:label=INTERNAL_IP,zone.basename())'
 }
 
+# `du -s` alone prints a bare byte count against the bucket URL, which reads as
+# an unlabelled number that jumps by four orders of magnitude the first time
+# anything is deployed. --readable-sizes carries its own unit.
 provider_bucket_usage() {
-    gc storage du -s "$CD_BUCKET" 2>/dev/null || echo "  (could not read $CD_BUCKET)"
+    gc storage du -s --readable-sizes "$CD_BUCKET" 2>/dev/null \
+        || echo "  (could not read $CD_BUCKET)"
 }
 
 # Everything that is not per-node. Called by destroy after the VMs are gone.

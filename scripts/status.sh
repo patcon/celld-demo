@@ -69,4 +69,8 @@ else
 fi
 
 log_step "Bucket"
+# Labelled, because bare `du -s` output reads as an unexplained number that
+# leaps by four orders of magnitude once the first deployment lands: an
+# undeployed fleet bucket holds nothing but celld's format marker.
+echo "  total size across all objects:"
 provider_bucket_usage | sed 's/^/  /'
