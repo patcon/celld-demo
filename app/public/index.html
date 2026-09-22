@@ -157,10 +157,19 @@
     try { return new Date(iso).toLocaleString(); } catch { return iso; }
   };
 
+  // Most round trips finish in a few milliseconds, and dimming for that long
+  // reads as a flicker. So a flag stops double clicks, and the loading state
+  // only shows once a request has been slow enough to notice.
+  let busy = false;
+
   async function call(path, method) {
+    if (busy) return;
+    busy = true;
     el.err.textContent = "";
-    el.inc.disabled = true;
-    el.count.dataset.loading = "true";
+    const slow = setTimeout(() => {
+      el.inc.disabled = true;
+      el.count.dataset.loading = "true";
+    }, 150);
     const started = performance.now();
     try {
       const res = await fetch(path, { method });
@@ -175,6 +184,8 @@
       // fleet, which is worth saying rather than hiding behind "failed".
       el.err.textContent = `Could not reach the cell: ${e.message}`;
     } finally {
+      clearTimeout(slow);
+      busy = false;
       el.count.dataset.loading = "false";
       el.inc.disabled = false;
     }
