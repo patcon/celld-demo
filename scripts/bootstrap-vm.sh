@@ -93,10 +93,20 @@ if [ -n "$CELLD_VERSION" ]; then
     export CELLD_VERSION
 fi
 curl -fsSL https://celld.dev/install.sh | sh
-"$CELLD_HOME/bin/celld" --version || true
 
 id celld >/dev/null 2>&1 || useradd --system --home-dir "$CELLD_STATE" --shell /usr/sbin/nologin celld
 install -d -o celld -g celld -m 0750 "$CELLD_STATE"
+
+# The installer creates its release directories 0700 root, and bin/celld is
+# only a symlink into one of them. The service runs as celld, which cannot
+# traverse that, so systemd fails the exec with 203/EXEC and restarts forever.
+# Nothing under here is a secret; it is the same public tarball for everyone.
+chmod -R a+rX "$CELLD_HOME"
+
+# Run the smoke check as the service user, not as root. As root it passes
+# whatever the permissions are, which is exactly how the 0700 release
+# directory reached a live node unnoticed.
+sudo -u celld "$CELLD_HOME/bin/celld" --version
 
 # celld-env carries CELLD_BUCKET and, for an S3 backend, the endpoint and keys.
 # For GCS it deliberately carries no credentials: celld picks up Application
