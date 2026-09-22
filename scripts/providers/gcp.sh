@@ -321,10 +321,7 @@ provider_ensure_node() {
     local n="$1" name
     name="$(node_name "$n")"
 
-    local tmp
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' RETURN
-    _node_metadata "$tmp"
+    _node_metadata "$CD_TMPDIR"
 
     # An existing node gets its metadata refreshed rather than skipped. The
     # startup script and every setting it reads live in metadata, so skipping

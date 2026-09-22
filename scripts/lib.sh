@@ -146,6 +146,24 @@ Install it:
   $hint"
 }
 
+# A scratch directory for this run, removed when the script exits.
+#
+# Deliberately not `local tmp; trap 'rm -rf "$tmp"' RETURN` inside whichever
+# function needs it. Bash runs a RETURN trap in the *caller's* scope, after the
+# callee's locals are gone, so under `set -u` that dies with "tmp: unbound
+# variable" -- reported against the caller's line number, nowhere near the
+# function that set the trap, and only once the caller returns, so the work
+# appears to have succeeded first. An EXIT trap on a global has neither
+# problem, and it also covers the paths that end in `die`.
+# Created here at source time, and read as $CD_TMPDIR. Not built lazily behind
+# a `tmp="$(cd_tmpdir)"` accessor either: command substitution runs in a
+# subshell, so the EXIT trap fires when that subshell ends and deletes the
+# directory before the caller can write to it. The caller is then holding a
+# path that vanished, which surfaces as a "No such file or directory" against
+# a directory it just successfully made.
+CD_TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$CD_TMPDIR"' EXIT
+
 # --- Polling ---------------------------------------------------------------
 
 # Retry a command until it succeeds, printing a dot per attempt. Every caller
