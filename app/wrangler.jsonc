@@ -1,0 +1,30 @@
+// An ordinary Wrangler config. Nothing here is celld-specific, which is the
+// point: celld reads the supported Wrangler subset unchanged, so this same
+// directory would deploy to Cloudflare with `wrangler deploy`. Testing that
+// claim is most of why this app exists.
+{
+  "name": "celld-demo",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-01",
+
+  // The Durable Object -- a "cell" in celld's vocabulary. One named actor with
+  // its own SQLite database, single-threaded, and the only thing in this app
+  // that holds state.
+  "durable_objects": {
+    "bindings": [
+      { "name": "COUNTER", "class_name": "Counter" }
+    ]
+  },
+
+  // new_sqlite_classes, not new_classes: celld gives every cell a SQLite
+  // database, and the SQL storage API is what this app uses.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Counter"] }
+  ],
+
+  // Static assets are served before the Worker runs, so the Worker only ever
+  // sees /api/* and the front end costs it nothing.
+  "assets": {
+    "directory": "./public"
+  }
+}

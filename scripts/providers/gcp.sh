@@ -1,0 +1,349 @@
+#!/usr/bin/env bash
+# GCP provider: Compute Engine VMs, a GCS fleet bucket, and a service account
+# scoped to that bucket alone.
+#
+# This is the only file allowed to call gcloud. Every verb script goes through
+# the provider_* contract below, which is what makes providers/exe.sh a
+# fill-in-the-blanks exercise rather than a rewrite.
+
+# Every gcloud call goes through these wrappers so the pinned project and zone
+# can never be forgotten at a call site.
+gc() { gcloud --project "$CD_PROJECT" "$@"; }
+
+# For compute subcommands that take no `--` passthrough. The zone lands at the
+# end, which is fine here but would be wrong for ssh/scp: anything after `--`
+# is handed to the real ssh binary, so a trailing --zone would be passed
+# through as a bogus ssh argument instead of being read by gcloud.
+gc_zone() { gcloud --project "$CD_PROJECT" compute "$@" --zone "$CD_ZONE"; }
+
+# ssh and scp put --zone up front, before any caller-supplied args, so callers
+# are free to use `--` for real ssh flags.
+gc_ssh() {
+    local name="$1"
+    shift
+    gcloud --project "$CD_PROJECT" compute ssh "$name" --zone "$CD_ZONE" "$@"
+}
+
+cd_service_account_email() { echo "${CD_SERVICE_ACCOUNT}@${CD_PROJECT}.iam.gserviceaccount.com"; }
+
+# Bucket name without the gs:// scheme, for gcloud storage, which wants both
+# forms in different places.
+cd_bucket_name() { echo "${CD_BUCKET#gs://}"; }
+
+# --- Auth ------------------------------------------------------------------
+
+# Only checks that a credential is on disk. It cannot tell whether that
+# credential still refreshes; require_gcloud's live API call does that.
+require_auth() {
+    command -v gcloud >/dev/null 2>&1 \
+        || die "gcloud not found. Install the Google Cloud CLI: https://cloud.google.com/sdk/docs/install"
+
+    CD_GCLOUD_ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -1)"
+    [ -n "$CD_GCLOUD_ACCOUNT" ] || die "No active gcloud account. Run: gcloud auth login"
+    log_info "Authenticated as $CD_GCLOUD_ACCOUNT"
+}
+
+# An expired refresh token fails every API call, so without this the caller
+# sees "cannot access project" and concludes the project is gone.
+die_reauth() {
+    die "gcloud credentials for '${CD_GCLOUD_ACCOUNT:-your account}' have expired.
+
+Renew them, then re-run. Naming the account matters: a bare 'gcloud auth login'
+signs in as whoever the browser is signed in as, and leaves that account active
+instead.
+
+  gcloud auth login ${CD_GCLOUD_ACCOUNT:-<account>}
+
+Nothing in GCP has changed. An expired token makes every project and instance
+look missing, because the API rejects the call before it looks anything up."
+}
+
+is_reauth_error() {
+    case "$1" in
+        *"Reauthentication failed"*|*"Reauthentication required"*) return 0 ;;
+        *"refreshing your current auth tokens"*|*"invalid_grant"*)  return 0 ;;
+        *"credentials are no longer valid"*|*"do not have valid credentials"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+require_gcloud() {
+    require_auth
+    require_config
+
+    # First live API call of every script, so it is where a stale token, a
+    # project pending deletion, and a genuine permissions problem get told
+    # apart. They all surface as the same failed describe otherwise.
+    local out
+    out="$(gcloud projects describe "$CD_PROJECT" --format='value(lifecycleState)' 2>&1)" || {
+        is_reauth_error "$out" && die_reauth
+        die "'${CD_GCLOUD_ACCOUNT:-your account}' cannot access project '$CD_PROJECT'.
+Check the project id. gcloud said:
+
+$out"
+    }
+
+    if [ "$out" = "DELETE_REQUESTED" ]; then
+        die "Project '$CD_PROJECT' is scheduled for deletion.
+
+GCP keeps it for 30 days, so it can be brought back:
+
+  gcloud projects undelete $CD_PROJECT"
+    fi
+}
+
+# Application Default Credentials are separate from your gcloud login, and the
+# local celld CLI needs them: `celld deploy` writes to the gs:// bucket from
+# here, not from a node.
+provider_require_deploy_creds() {
+    [ "$CD_STORAGE_BACKEND" = "gcs" ] || return 0
+    gcloud auth application-default print-access-token >/dev/null 2>&1 || die \
+"No Application Default Credentials.
+
+Your gcloud login and ADC are separate credentials, and the celld CLI uses ADC
+to reach $CD_BUCKET from this machine. Run:
+
+  gcloud auth application-default login"
+}
+
+# Services are not enabled on a fresh project. Enabling is idempotent and takes
+# up to a minute the first time, so only call the API when it is actually off.
+require_api() {
+    local api="$1"
+    if gc services list --enabled --format='value(config.name)' 2>/dev/null | grep -qx "$api"; then
+        return 0
+    fi
+    log_warn "$api is not enabled on '$CD_PROJECT'. Enabling now (this can take a minute)."
+    gc services enable "$api"
+    log_info "Enabled $api"
+}
+
+provider_preflight() {
+    require_gcloud
+    require_api compute.googleapis.com
+    require_api storage.googleapis.com
+    require_api iam.googleapis.com
+}
+
+# --- Bucket and identity ---------------------------------------------------
+
+provider_ensure_bucket() {
+    local name
+    name="$(cd_bucket_name)"
+
+    if gc storage buckets describe "gs://$name" --format='value(name)' >/dev/null 2>&1; then
+        log_info "Bucket gs://$name already exists"
+    else
+        log_step "Creating bucket gs://$name"
+        # --soft-delete-duration=0 matters more than it looks. GCS now defaults
+        # to retaining deleted and superseded objects for 7 days, and celld
+        # rewrites bucket objects constantly, so the default quietly bills for
+        # a week of every version of everything.
+        #
+        # No versioning, for the same reason. celld does its own consistency
+        # with conditional writes; object versions would only add cost.
+        gc storage buckets create "gs://$name" \
+            --location="$CD_BUCKET_LOCATION" \
+            --uniform-bucket-level-access \
+            --soft-delete-duration=0
+        log_info "Created gs://$name in $CD_BUCKET_LOCATION"
+    fi
+
+    local sa
+    sa="$(cd_service_account_email)"
+    if gc iam service-accounts describe "$sa" >/dev/null 2>&1; then
+        log_info "Service account $sa already exists"
+    else
+        log_step "Creating service account $CD_SERVICE_ACCOUNT"
+        gc iam service-accounts create "$CD_SERVICE_ACCOUNT" \
+            --display-name="celld fleet node" \
+            --description="Runs celld; has objectAdmin on the fleet bucket and nothing else"
+        # IAM is eventually consistent, and the instances create below fails
+        # outright if the account is not visible yet.
+        wait_for "Service account is visible" 12 5 \
+            gc iam service-accounts describe "$sa" \
+            || die "Service account $sa did not become visible after a minute."
+    fi
+
+    # Scoped to this one bucket, per celld's security doc: bucket credentials
+    # are fleet control, so they get the narrowest grant that works.
+    log_step "Granting $CD_SERVICE_ACCOUNT objectAdmin on gs://$name"
+    gc storage buckets add-iam-policy-binding "gs://$name" \
+        --member="serviceAccount:$sa" \
+        --role=roles/storage.objectAdmin >/dev/null
+    log_info "Granted"
+}
+
+# Nothing is needed for ingress: cloudflared dials out, and celld's public
+# listener binds loopback. The only rule in play is peer replication between
+# nodes on the internal listener, and only once there is more than one node.
+provider_ensure_firewall() {
+    [ "$CD_NODE_COUNT" -gt 1 ] || return 0
+
+    if gc compute firewall-rules describe default-allow-internal >/dev/null 2>&1; then
+        log_info "default-allow-internal covers peer traffic"
+        return 0
+    fi
+
+    if gc compute firewall-rules describe celld-internal >/dev/null 2>&1; then
+        log_info "celld-internal firewall rule already exists"
+        return 0
+    fi
+
+    log_step "Creating celld-internal firewall rule"
+    # Source and target are both the celld-node tag, so this opens the internal
+    # listener to other celld nodes and to nothing else in the VPC. The
+    # operator API on that port is unauthenticated, which is exactly why this
+    # is not a subnet-wide rule.
+    gc compute firewall-rules create celld-internal \
+        --network=default \
+        --allow="tcp:$CD_INTERNAL_PORT" \
+        --source-tags=celld-node \
+        --target-tags=celld-node \
+        --description="celld peer replication and operator API (celld-demo)"
+    log_info "Created celld-internal"
+}
+
+# --- Nodes -----------------------------------------------------------------
+
+provider_node_status() {
+    gc_zone instances describe "$(node_name "$1")" --format='value(status)' 2>/dev/null || echo "NOT_FOUND"
+}
+
+provider_node_exists() {
+    gc_zone instances describe "$(node_name "$1")" --format='value(name)' >/dev/null 2>&1
+}
+
+provider_internal_ip() {
+    gc_zone instances describe "$(node_name "$1")" \
+        --format='value(networkInterfaces[0].networkIP)' 2>/dev/null
+}
+
+# GCE internal DNS. This is what peers dial, and it is stable across stop and
+# start in a way the IP is not guaranteed to be.
+provider_advertise_addr() {
+    echo "$(node_name "$1").${CD_ZONE}.c.${CD_PROJECT}.internal:${CD_INTERNAL_PORT}"
+}
+
+provider_ensure_node() {
+    local n="$1" name
+    name="$(node_name "$n")"
+
+    if provider_node_exists "$n"; then
+        log_info "Node $name already exists ($(provider_node_status "$n"))"
+        return 0
+    fi
+
+    # The storage env and the tunnel credentials go up as metadata *files*
+    # rather than --metadata values: values are comma-separated, so a secret
+    # containing a comma would silently split into two keys, and JSON contains
+    # plenty of them.
+    local tmp env_file
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' RETURN
+    env_file="$tmp/celld.env"
+    storage_env > "$env_file"
+
+    local from_file="startup-script=$CD_SCRIPT_DIR/bootstrap-vm.sh,celld-env=$env_file"
+    local tunnel_meta=""
+    if [ "$CD_TUNNEL_MODE" = "named" ]; then
+        [ -n "$CD_TUNNEL_ID" ] || die "CD_TUNNEL_MODE=named needs CD_TUNNEL_ID. Re-run: ./celld-demo init"
+        local cred="$HOME/.cloudflared/${CD_TUNNEL_ID}.json"
+        [ -f "$cred" ] || die "Tunnel credentials not found at $cred
+
+That file is written by \`cloudflared tunnel create\` and is the only copy.
+If it is gone, delete the tunnel and make a new one:
+
+  cloudflared tunnel delete ${CD_TUNNEL_NAME:-$CD_TUNNEL_ID} && ./celld-demo init"
+        from_file="$from_file,celld-tunnel-cred=$cred"
+        tunnel_meta=",celld-tunnel-id=${CD_TUNNEL_ID}"
+    fi
+
+    log_step "Creating node $name"
+    gc compute instances create "$name" \
+        --zone="$CD_ZONE" \
+        --machine-type="$CD_MACHINE_TYPE" \
+        --image-family="$CD_IMAGE_FAMILY" \
+        --image-project="$CD_IMAGE_PROJECT" \
+        --boot-disk-size="$CD_DISK_SIZE" \
+        --boot-disk-type="$CD_DISK_TYPE" \
+        --boot-disk-device-name="$name" \
+        --service-account="$(cd_service_account_email)" \
+        --scopes=cloud-platform \
+        --tags=celld-node \
+        --labels=purpose=celld-demo,managed-by=celld-demo-scripts \
+        --metadata-from-file="$from_file" \
+        --metadata="celld-version=${CD_CELLD_VERSION},celld-public-port=${CD_PUBLIC_PORT},celld-internal-port=${CD_INTERNAL_PORT},celld-tunnel-mode=${CD_TUNNEL_MODE},celld-tunnel-hostname=${CD_TUNNEL_HOSTNAME}${tunnel_meta}"
+    log_info "Created $name"
+}
+
+provider_start_node() {
+    local n="$1" name status
+    name="$(node_name "$n")"
+    status="$(provider_node_status "$n")"
+    case "$status" in
+        RUNNING)   log_info "$name is already running" ;;
+        NOT_FOUND) die "$name does not exist. Run: ./celld-demo create" ;;
+        *)         log_step "Starting $name"
+                   gc_zone instances start "$name" --quiet ;;
+    esac
+}
+
+provider_stop_node() {
+    local n="$1" name
+    name="$(node_name "$1")"
+    log_step "Stopping $name"
+    gc_zone instances stop "$name" --quiet
+}
+
+provider_delete_node() {
+    local n="$1" name
+    name="$(node_name "$1")"
+    log_step "Deleting $name"
+    gc_zone instances delete "$name" --quiet --delete-disks=all
+}
+
+# Run a command on node N. gcloud's ssh wrapper manages the
+# ~/.ssh/google_compute_engine keypair and pushes the public key into project
+# metadata, so there is no manual key handling.
+provider_ssh() {
+    local n="$1"
+    shift
+    gc_ssh "$(node_name "$n")" --command "$*"
+}
+
+provider_ssh_interactive() {
+    local n="$1"
+    shift
+    gc_ssh "$(node_name "$n")" "$@"
+}
+
+# One table of every node in the fleet, whatever state it is in.
+provider_list_nodes() {
+    gc compute instances list \
+        --filter="name~^${CD_INSTANCE_PREFIX}-" \
+        --format='table(name,status,machineType.basename(),networkInterfaces[0].networkIP:label=INTERNAL_IP,zone.basename())'
+}
+
+provider_bucket_usage() {
+    gc storage du -s "$CD_BUCKET" 2>/dev/null || echo "  (could not read $CD_BUCKET)"
+}
+
+# Everything that is not per-node. Called by destroy after the VMs are gone.
+provider_teardown() {
+    local sa
+    sa="$(cd_service_account_email)"
+    if gc iam service-accounts describe "$sa" >/dev/null 2>&1; then
+        log_step "Deleting service account $sa"
+        gc iam service-accounts delete "$sa" --quiet
+    fi
+    if gc compute firewall-rules describe celld-internal >/dev/null 2>&1; then
+        log_step "Deleting celld-internal firewall rule"
+        gc compute firewall-rules delete celld-internal --quiet
+    fi
+}
+
+provider_delete_bucket() {
+    log_step "Deleting $CD_BUCKET and everything in it"
+    gc storage rm -r "$CD_BUCKET"
+}

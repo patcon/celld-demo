@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# celld-demo: stand a celld fleet up on GCP, deploy an app to it, and stop it
+# again when you are not using it.
+
+set -euo pipefail
+
+CD_DISPATCH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CD_SCRIPTS="$CD_DISPATCH_ROOT/scripts"
+
+# The order you actually run them in, not alphabetical.
+CD_VERBS="init create deploy status up down start stop logs ssh destroy"
+
+usage() {
+    cat <<'EOF'
+celld-demo — a celld fleet on GCP: up, deployed to, and stopped again.
+
+Usage:
+  ./celld-demo <verb> [options]
+
+Verbs:
+EOF
+    local v desc
+    for v in $CD_VERBS; do
+        # Each script's second line is its one-line summary. Keeping the help
+        # text in the scripts means it cannot drift from what they do.
+        desc="$(sed -n '2p' "$CD_SCRIPTS/$v.sh" | sed 's/^# \{0,1\}//')"
+        printf '  %-8s %s\n' "$v" "$desc"
+    done
+    cat <<'EOF'
+
+  ./celld-demo <verb> --help   what that verb does, and why
+
+First run:
+  ./celld-demo init && ./celld-demo create && ./celld-demo deploy
+
+Daily:
+  ./celld-demo stop     when you finish, to stop paying for compute
+  ./celld-demo start    to pick it back up
+
+Configuration:
+  scripts/config.sh   committed defaults, with the reasoning
+  scripts/local.env   yours, gitignored, written by init
+EOF
+}
+
+case "${1:-}" in
+    ""|-h|--help|help)
+        usage
+        exit 0
+        ;;
+esac
+
+CD_VERB="$1"
+shift
+
+CD_TARGET="$CD_SCRIPTS/$CD_VERB.sh"
+if [ ! -f "$CD_TARGET" ]; then
+    echo -e "\033[0;31m[celld]\033[0m Unknown verb: $CD_VERB" >&2
+    echo >&2
+    usage >&2
+    exit 1
+fi
+
+exec "$CD_TARGET" "$@"

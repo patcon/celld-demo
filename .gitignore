@@ -1,0 +1,8 @@
+# Per-person GCP settings written by ./celld-demo init.
+scripts/local.env
+
+# celld dev state, and anything celld deploy stages locally.
+app/.celld/
+.celld/
+
+node_modules/

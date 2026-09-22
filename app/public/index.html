@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>celld demo</title>
+<style>
+  :root {
+    --bg: #fbfbfa;
+    --fg: #1a1a18;
+    --muted: #6b6b66;
+    --line: #e3e3df;
+    --accent: #2f6f4f;
+    --card: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a;
+      --fg: #eceCE8;
+      --muted: #9a9a94;
+      --line: #2c2c32;
+      --accent: #7bc39a;
+      --card: #1e1e24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 48px 16px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    justify-content: center;
+  }
+  main { width: 100%; max-width: 34rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 0 0 2rem; font-size: .95rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 28px;
+    text-align: center;
+  }
+  .count {
+    font-size: 4rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -.03em;
+    line-height: 1;
+    margin: .25rem 0 1.25rem;
+  }
+  .count[data-loading="true"] { opacity: .35; }
+  button {
+    font: inherit;
+    font-weight: 550;
+    color: #fff;
+    background: var(--accent);
+    border: 0;
+    border-radius: 8px;
+    padding: .7rem 1.6rem;
+    cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .5; cursor: default; }
+  dl {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: .35rem 1.25rem;
+    margin: 1.75rem 0 0;
+    font-size: .875rem;
+    text-align: left;
+  }
+  dt { color: var(--muted); }
+  dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .note {
+    margin-top: 2rem;
+    padding: 16px 18px;
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    background: var(--card);
+    font-size: .9rem;
+    color: var(--muted);
+  }
+  .note strong { color: var(--fg); font-weight: 600; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .85em;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: .1em .35em;
+  }
+  .err { color: #c0392b; font-size: .875rem; margin-top: 1rem; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>celld demo</h1>
+  <p class="sub">One Durable Object, on our own VMs, with its state in our own bucket.</p>
+
+  <div class="card">
+    <div class="count" id="count" data-loading="true">—</div>
+    <button id="inc">Increment</button>
+    <dl>
+      <dt>cell</dt><dd>COUNTER / "demo"</dd>
+      <dt>first seen</dt><dd id="first">—</dd>
+      <dt>last write</dt><dd id="last">—</dd>
+      <dt>round trip</dt><dd id="rtt">—</dd>
+    </dl>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div class="note">
+    <strong>The actual test.</strong> Increment a few times, then run
+    <code>./celld-demo stop</code> and <code>./celld-demo start</code> and
+    reload this page. The VM that served these requests was powered off in
+    between, and the count is unchanged: none of this state was ever on it.
+  </div>
+</main>
+
+<script type="module">
+  const el = {
+    count: document.getElementById("count"),
+    first: document.getElementById("first"),
+    last:  document.getElementById("last"),
+    rtt:   document.getElementById("rtt"),
+    err:   document.getElementById("err"),
+    inc:   document.getElementById("inc"),
+  };
+
+  const when = (iso) => {
+    if (!iso) return "—";
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  };
+
+  async function call(path, method) {
+    el.err.textContent = "";
+    el.inc.disabled = true;
+    el.count.dataset.loading = "true";
+    const started = performance.now();
+    try {
+      const res = await fetch(path, { method });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      const state = await res.json();
+      el.count.textContent = state.count;
+      el.first.textContent = when(state.firstSeen);
+      el.last.textContent  = when(state.lastSeen);
+      el.rtt.textContent   = `${Math.round(performance.now() - started)} ms`;
+    } catch (e) {
+      // A 503 here is usually a node that is draining or still joining the
+      // fleet, which is worth saying rather than hiding behind "failed".
+      el.err.textContent = `Could not reach the cell: ${e.message}`;
+    } finally {
+      el.count.dataset.loading = "false";
+      el.inc.disabled = false;
+    }
+  }
+
+  el.inc.addEventListener("click", () => call("/api/increment", "POST"));
+  call("/api/state", "GET");
+</script>
+</body>
+</html>
