@@ -223,6 +223,76 @@ wait_for_or_abort() {
     return 1
 }
 
+# --- Talking to a node ------------------------------------------------------
+
+# Every curl aimed at celld carries these deadlines.
+#
+# celld reserves both listener sockets before it does any storage work, then
+# blocks in wait_for_deployment_pointer until `deploy/current.json` exists in
+# the bucket. A node that has never been deployed to therefore *accepts* the
+# TCP connection and then answers nothing at all -- not a 503, not a refusal.
+# A curl with no deadline waits on that forever, which is what made create and
+# status hang with no output instead of failing. celld's own readiness loop
+# (crates/celld/dev.rs) bounds every attempt for the same reason.
+CD_CURL_DEADLINE="--connect-timeout 3 --max-time 8"
+
+# Is the public listener accepting TCP yet? This is all that can be asserted
+# about a node before its first deployment, because the socket is reserved
+# early and nothing answers on it until a deployment exists.
+node_port_open() {
+    provider_ssh "$1" "timeout 5 bash -c '</dev/tcp/127.0.0.1/${CD_PUBLIC_PORT}'"
+}
+
+# 0 only on a real 200 from the public health path. 200 means draining is off,
+# the fleet gate is open, and the node is serving a deployment.
+node_healthy() {
+    # shellcheck disable=SC2086
+    provider_ssh "$1" "curl -fsS $CD_CURL_DEADLINE \
+        http://127.0.0.1:${CD_PUBLIC_PORT}/.well-known/celld/health"
+}
+
+# The health status as a string, for display rather than for gating:
+#   200       serving            503  draining, or joining the fleet
+#   waiting   bound but never answering -- awaiting the first deployment
+#   refused   nothing listening on the port at all
+#   ---       could not reach the node to ask
+#
+# curl reports both "nothing is listening" and "listening but silent" as an
+# http_code of 000, and those are opposite diagnoses here: the first means
+# celld is down, the second means celld is up and idling until a deployment
+# exists. Its exit status tells them apart (7 refused, 28 timed out).
+node_health_code() {
+    local reply
+    # The remote prints "<http_code>:<curl exit>". curl writes 000 *and* exits
+    # non-zero on a failure, so keying the fallback on the exit status alone
+    # would append to the output and yield "000---".
+    # shellcheck disable=SC2086
+    reply="$(provider_ssh "$1" "curl -s -o /dev/null -w '%{http_code}' $CD_CURL_DEADLINE \
+        http://127.0.0.1:${CD_PUBLIC_PORT}/.well-known/celld/health; printf ':%s' \$?" \
+        2>/dev/null)" || true
+    case "$reply" in
+        200:*)   echo "200" ;;
+        503:*)   echo "503" ;;
+        000:7)   echo "refused" ;;
+        000:28)  echo "waiting" ;;
+        [0-9][0-9][0-9]:*) echo "${reply%%:*}" ;;
+        *)       echo "---" ;;
+    esac
+}
+
+# Plain-English rendering of the above, used by create and status so the two
+# cannot describe the same node differently.
+describe_health() {
+    case "$1" in
+        200)     echo "200 (serving)" ;;
+        503)     echo "503 (draining, or still joining the fleet)" ;;
+        waiting) echo "listening, no answer yet (awaiting the first deployment)" ;;
+        refused) echo "connection refused (celld is not listening)" ;;
+        ---)     echo "could not reach the node to ask" ;;
+        *)       echo "$1" ;;
+    esac
+}
+
 # --- local.env -------------------------------------------------------------
 
 # Write a single setting into local.env, updating the line if it is already

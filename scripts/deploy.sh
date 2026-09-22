@@ -52,13 +52,38 @@ if [ "$RELOAD" = true ]; then
         ip="$(provider_internal_ip "$n")"
         # /reload lives on the internal listener, which binds the VPC address
         # rather than loopback, so the node curls its own internal IP.
-        if provider_ssh "$n" "curl -fsS -X POST http://${ip}:${CD_INTERNAL_PORT}/reload" >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        if provider_ssh "$n" "curl -fsS $CD_CURL_DEADLINE -X POST http://${ip}:${CD_INTERNAL_PORT}/reload" >/dev/null 2>&1; then
             log_info "$name adopted the new deployment"
         else
             log_warn "$name did not accept /reload; it will poll within 30s anyway."
         fi
     done
 fi
+
+# The health check lives here rather than in create, because this is the first
+# moment it can pass. Before a deployment exists celld has reserved its ports
+# but is still waiting on the bucket pointer, and the health path answers
+# nothing at all; the deploy above is what releases it. A node reaches 200
+# once it is not draining, its fleet gate is open, and it is serving.
+log_step "Waiting for nodes to report healthy"
+for n in $(node_numbers); do
+    name="$(node_name "$n")"
+    status="$(provider_node_status "$n")"
+    if [ "$status" != "RUNNING" ]; then
+        log_warn "$name is $status; skipping its health check."
+        continue
+    fi
+    if wait_for "$name is healthy" 20 5 node_healthy "$n"; then
+        continue
+    fi
+    # Not fatal. The deployment is already committed to the bucket -- that is
+    # the fleet-wide commit point -- so a node that is slow to settle will
+    # still pick it up. Failing the whole deploy here would imply the rollout
+    # needs redoing, which it does not.
+    log_warn "$name did not report healthy: $(describe_health "$(node_health_code "$n")")"
+    log_warn "  The deployment is committed to the bucket regardless. Check: ./celld-demo logs $n"
+done
 
 URL="$(tunnel_url 1)"
 log_step "Deployed"

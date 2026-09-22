@@ -33,18 +33,16 @@ for n in $(node_numbers); do
     services="$(provider_ssh "$n" "systemctl is-active celld cloudflared | tr '\n' ' '" 2>/dev/null || echo "unknown")"
     echo "  services       celld/cloudflared: $services"
 
-    health="$(provider_ssh "$n" \
-        "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${CD_PUBLIC_PORT}/.well-known/celld/health" 2>/dev/null || echo "---")"
-    case "$health" in
-        200) echo "  health         200 (serving)" ;;
-        503) echo "  health         503 (draining, or still joining the fleet)" ;;
-        *)   echo "  health         $health" ;;
-    esac
+    # Bounded, because a node awaiting its first deployment accepts the
+    # connection and never answers. Without a deadline this call is where
+    # status silently hung forever.
+    echo "  health         $(describe_health "$(node_health_code "$n")")"
 
     ip="$(provider_internal_ip "$n")"
     # The operator API is on the internal listener, which binds the VPC address
     # rather than loopback, so the node has to curl its own internal IP.
-    provider_ssh "$n" "curl -s http://${ip}:${CD_INTERNAL_PORT}/state | python3 -c '
+    # shellcheck disable=SC2086
+    provider_ssh "$n" "curl -s $CD_CURL_DEADLINE http://${ip}:${CD_INTERNAL_PORT}/state | python3 -c '
 import json, sys
 try:
     s = json.load(sys.stdin)

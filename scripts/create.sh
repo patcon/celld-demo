@@ -91,14 +91,25 @@ If it died, re-run the startup script once the cause is fixed:
   ./celld-demo ssh $n -- sudo google_metadata_script_runner startup" ;;
     esac
 
-    log_step "Waiting for celld to report healthy on $name"
-    # Health is 503 until the node has joined the fleet and settled, so this
-    # waits for a real 200 rather than for the port to open.
-    wait_for "celld is healthy" 30 5 \
-        provider_ssh "$n" "curl -fsS http://127.0.0.1:${CD_PUBLIC_PORT}/.well-known/celld/health" \
-        || die "celld did not become healthy after 2.5 minutes on $name.
+    log_step "Waiting for celld to accept connections on $name"
+    # Deliberately not a health check. celld reserves its listener sockets
+    # before it touches storage, then blocks until the fleet bucket holds a
+    # deployment pointer, so a node that has never been deployed to accepts
+    # the connection and answers nothing -- health returns neither 200 nor
+    # 503, it just never replies. Gating create on a 200 could therefore
+    # never pass on a fresh fleet: the deployment that would open the gate
+    # comes from `./celld-demo deploy`, which create told you to run *after*
+    # it finished. That deadlock is why this waits for the port instead, and
+    # why deploy owns the health check.
+    wait_for "celld is listening" 30 5 node_port_open "$n" \
+        || die "celld is not listening on port $CD_PUBLIC_PORT after 2.5 minutes on $name.
 Read the log:
   ./celld-demo logs $n"
+
+    # One bounded probe, for the report rather than as a gate. A fleet that
+    # has been deployed to before answers 200 here on a rebuilt node, and
+    # saying so is more honest than calling every node "awaiting deployment".
+    log_info "health: $(describe_health "$(node_health_code "$n")")"
 done
 
 log_step "Ingress"
@@ -112,6 +123,9 @@ fi
 log_step "Next"
 cat <<EOF
   ./celld-demo deploy    build app/ and roll it out
+                         Until this runs once, the nodes idle with their ports
+                         reserved and serve nothing -- that is celld waiting on
+                         the fleet bucket for a deployment, not a broken node.
   ./celld-demo status    nodes, cells, memory, and the public URL
 
 A running node costs money whether or not anything is deployed to it. When you
