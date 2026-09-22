@@ -19,6 +19,15 @@
 # is deliberately no default: a wrong guess bills someone else's project.
 : "${CD_PROJECT:=}"
 
+# The Google account every gcloud call runs as. Empty means "whichever account
+# is active", which is the right default for someone with one account and a
+# trap for someone with two: the active account is global gcloud state that
+# another project, another tool, or a stray `gcloud config set account` can
+# change between two runs of this CLI. init pins it here when it finds more
+# than one signed in, and from then on this tool names the account explicitly
+# on every call instead of inheriting it.
+: "${CD_GCLOUD_ACCOUNT:=}"
+
 # Zone for the VMs. Everything is single-zone: this is a test fleet, and
 # celld's internal listener wants a low-latency private network between nodes.
 : "${CD_ZONE:=}"

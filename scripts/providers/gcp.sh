@@ -6,22 +6,41 @@
 # the provider_* contract below, which is what makes providers/exe.sh a
 # fill-in-the-blanks exercise rather than a rewrite.
 
-# Every gcloud call goes through these wrappers so the pinned project and zone
-# can never be forgotten at a call site.
-gc() { gcloud --project "$CD_PROJECT" "$@"; }
+# Every gcloud call goes through these wrappers so the pinned project, zone and
+# account can never be forgotten at a call site.
+#
+# The account matters as much as the project when you hold more than one, which
+# on a work laptop is the normal case: a bare gcloud call runs as whichever
+# account is *active*, and `gcloud config set account` or another tool's login
+# can move that out from under you between two runs of this CLI. Pinning it in
+# local.env means this tool always acts as the same identity no matter what the
+# active account happens to be, and a wrong one fails loudly instead of quietly
+# creating billable resources somewhere else.
+#
+# ${VAR:+--account=$VAR} expands to nothing when unset, so this stays correct
+# before init has run. Unquoted on purpose -- it must vanish entirely when
+# empty, and an account is an email address, so there is nothing to split on.
+# shellcheck disable=SC2086
+gc() { gcloud --project "$CD_PROJECT" ${CD_GCLOUD_ACCOUNT:+--account=$CD_GCLOUD_ACCOUNT} "$@"; }
 
 # For compute subcommands that take no `--` passthrough. The zone lands at the
 # end, which is fine here but would be wrong for ssh/scp: anything after `--`
 # is handed to the real ssh binary, so a trailing --zone would be passed
 # through as a bogus ssh argument instead of being read by gcloud.
-gc_zone() { gcloud --project "$CD_PROJECT" compute "$@" --zone "$CD_ZONE"; }
+# shellcheck disable=SC2086
+gc_zone() {
+    gcloud --project "$CD_PROJECT" ${CD_GCLOUD_ACCOUNT:+--account=$CD_GCLOUD_ACCOUNT} \
+        compute "$@" --zone "$CD_ZONE"
+}
 
 # ssh and scp put --zone up front, before any caller-supplied args, so callers
 # are free to use `--` for real ssh flags.
 gc_ssh() {
     local name="$1"
     shift
-    gcloud --project "$CD_PROJECT" compute ssh "$name" --zone "$CD_ZONE" "$@"
+    # shellcheck disable=SC2086
+    gcloud --project "$CD_PROJECT" ${CD_GCLOUD_ACCOUNT:+--account=$CD_GCLOUD_ACCOUNT} \
+        compute ssh "$name" --zone "$CD_ZONE" "$@"
 }
 
 cd_service_account_email() { echo "${CD_SERVICE_ACCOUNT}@${CD_PROJECT}.iam.gserviceaccount.com"; }
@@ -38,9 +57,40 @@ require_auth() {
     command -v gcloud >/dev/null 2>&1 \
         || die "gcloud not found. Install the Google Cloud CLI: https://cloud.google.com/sdk/docs/install"
 
+    # A pinned account (local.env, written by init) wins over the active one.
+    # It does not have to be the active account -- the wrappers pass --account
+    # explicitly -- but it does have to be signed in, or every call fails with
+    # a stack of gcloud output that never says "wrong account".
+    if [ -n "${CD_GCLOUD_ACCOUNT:-}" ]; then
+        gcloud auth list --format='value(account)' 2>/dev/null | grep -qx "$CD_GCLOUD_ACCOUNT" || die \
+            "'$CD_GCLOUD_ACCOUNT' is pinned in scripts/local.env but is not signed in to gcloud.
+
+Sign in as that account:
+  gcloud auth login $CD_GCLOUD_ACCOUNT
+
+Or, if this fleet should belong to a different account, change
+CD_GCLOUD_ACCOUNT in scripts/local.env. Signed in now:
+$(gcloud auth list --format='value(account)' 2>/dev/null | sed 's/^/  /')"
+        log_info "Acting as $CD_GCLOUD_ACCOUNT (pinned)"
+        return 0
+    fi
+
     CD_GCLOUD_ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -1)"
     [ -n "$CD_GCLOUD_ACCOUNT" ] || die "No active gcloud account. Run: gcloud auth login"
     log_info "Authenticated as $CD_GCLOUD_ACCOUNT"
+}
+
+# The ADC identity is a separate credential from the gcloud one, and the
+# browser -- not the CLI -- decides which account it ends up on. When you hold
+# two Google accounts, the chooser will happily hand back the one you were
+# already signed into. `celld deploy` writes to the fleet bucket as *that*
+# identity, so a mismatch shows up as a 403 on deploy long after init looked
+# like it succeeded. Cheap to check, so check rather than assume.
+adc_account() {
+    local token
+    token="$(gcloud auth application-default print-access-token 2>/dev/null)" || return 1
+    curl -sf "https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=$token" 2>/dev/null \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("email",""))' 2>/dev/null
 }
 
 # An expired refresh token fails every API call, so without this the caller

@@ -147,6 +147,13 @@ separate. `gcloud auth application-default login`.
 assigned when `cloudflared` starts, so every `start` gets a new one. Use a
 named tunnel (`./celld-demo init`) for a stable hostname.
 
+**It's running as the wrong Google account.** `CD_GCLOUD_ACCOUNT` in
+`local.env` pins the identity, and every gcloud call names it explicitly, so
+your active account can move without dragging this fleet with it. `init` asks
+which account when it sees more than one signed in. ADC is a *second*
+credential chosen by the browser, not the CLI — `init` checks it matches and
+warns if not, because a mismatch only surfaces as a 403 from `deploy`.
+
 **`Reauthentication failed` on every command.** An expired token makes every
 project and instance look missing. `gcloud auth login <your-account>` — naming
 the account matters.

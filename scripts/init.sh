@@ -59,20 +59,47 @@ zone_region() { echo "${1%-*}"; }
 log_step "Checking gcloud"
 require_auth
 
+# --- Account ---------------------------------------------------------------
+
+# Only worth asking when there is a choice to get wrong. One signed-in account
+# is the common case and answering "which one" there is pure friction.
+SIGNED_IN="$(gcloud auth list --format='value(account)' 2>/dev/null)"
+if [ "$(echo "$SIGNED_IN" | grep -c .)" -gt 1 ]; then
+    log_step "Account"
+    echo "You are signed in to more than one account. This fleet gets billed to"
+    echo "whichever one you pick here, and every gcloud call this tool makes"
+    echo "will name it explicitly -- so switching your active account later"
+    echo "with 'gcloud config set account' will not move this fleet."
+    echo
+    echo "$SIGNED_IN" | sed 's/^/  /'
+    echo
+    ACCOUNT="$(ask "Account for this fleet" "$CD_GCLOUD_ACCOUNT")"
+    echo "$SIGNED_IN" | grep -qx "$ACCOUNT" \
+        || die "'$ACCOUNT' is not signed in. Run: gcloud auth login $ACCOUNT"
+    CD_GCLOUD_ACCOUNT="$ACCOUNT"
+    log_info "Using $CD_GCLOUD_ACCOUNT"
+fi
+
 # --- Project ---------------------------------------------------------------
 
 log_step "Project"
 echo "This creates VMs and a bucket and bills them, so use a sandbox project"
 echo "you are happy to delete. Projects your account can see:"
 echo
-gcloud projects list --format='table(projectId,name,projectNumber)' 2>/dev/null | sed 's/^/  /' \
+# shellcheck disable=SC2086
+gcloud ${CD_GCLOUD_ACCOUNT:+--account=$CD_GCLOUD_ACCOUNT} \
+    projects list --format='table(projectId,name,projectNumber)' 2>/dev/null | sed 's/^/  /' \
     || log_warn "  (could not list projects; if this says reauth, run: gcloud auth login $CD_GCLOUD_ACCOUNT)"
 echo
 PROJECT="$(ask "GCP project id" "${CD_PROJECT:-}")"
 [ -n "$PROJECT" ] || die "A project id is required."
 
-if gcloud billing projects describe "$PROJECT" >/dev/null 2>&1; then
-    if [ "$(gcloud billing projects describe "$PROJECT" --format='value(billingEnabled)' 2>/dev/null)" != "True" ]; then
+# shellcheck disable=SC2086
+GC_ACCT="${CD_GCLOUD_ACCOUNT:+--account=$CD_GCLOUD_ACCOUNT}"
+# shellcheck disable=SC2086
+if gcloud $GC_ACCT billing projects describe "$PROJECT" >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    if [ "$(gcloud $GC_ACCT billing projects describe "$PROJECT" --format='value(billingEnabled)' 2>/dev/null)" != "True" ]; then
         log_warn "Billing is NOT enabled on '$PROJECT'. Compute Engine will refuse to create instances."
         log_warn "Link a billing account: gcloud billing projects link $PROJECT --billing-account=<ACCOUNT_ID>"
         confirm "Continue anyway?" "n" || exit 1
@@ -93,10 +120,29 @@ if gcloud auth application-default print-access-token >/dev/null 2>&1; then
 else
     log_warn "No Application Default Credentials found."
     if confirm "Run 'gcloud auth application-default login' now?" "y"; then
-        gcloud auth application-default login
+        # --account is a hint here, not a guarantee: this flow hands off to a
+        # browser, and the browser's account chooser has the last word. Pick
+        # $CD_GCLOUD_ACCOUNT in it. The check below is what actually catches a
+        # wrong pick.
+        # shellcheck disable=SC2086
+        gcloud ${CD_GCLOUD_ACCOUNT:+--account=$CD_GCLOUD_ACCOUNT} auth application-default login
     else
         log_warn "Skipped. \`./celld-demo deploy\` will fail until you run it."
     fi
+fi
+
+# ADC is a second, independent credential, and the browser chose it. If it
+# landed on a different Google account than the one running gcloud, everything
+# here still looks fine -- until `celld deploy` writes to the bucket as that
+# other identity and gets a 403. Say so now, while the fix is one command.
+ADC_ACCOUNT="$(adc_account || true)"
+if [ -n "$ADC_ACCOUNT" ] && [ -n "${CD_GCLOUD_ACCOUNT:-}" ] && [ "$ADC_ACCOUNT" != "$CD_GCLOUD_ACCOUNT" ]; then
+    log_warn "ADC belong to '$ADC_ACCOUNT', but this fleet uses '$CD_GCLOUD_ACCOUNT'."
+    log_warn "\`./celld-demo deploy\` writes to the bucket as '$ADC_ACCOUNT'."
+    log_warn "Redo the ADC login and pick $CD_GCLOUD_ACCOUNT in the browser:"
+    log_warn "  gcloud auth application-default login"
+elif [ -n "$ADC_ACCOUNT" ]; then
+    log_info "ADC belong to $ADC_ACCOUNT"
 fi
 
 # ADC login takes its quota project from whatever `gcloud config` currently
@@ -258,6 +304,7 @@ cat > "$LOCAL_ENV" <<EOF
 # overrides both.
 
 CD_PROJECT="$PROJECT"
+CD_GCLOUD_ACCOUNT="$CD_GCLOUD_ACCOUNT"
 CD_ZONE="$ZONE"
 CD_BUCKET="$BUCKET"
 CD_BUCKET_LOCATION="$BUCKET_LOCATION"
