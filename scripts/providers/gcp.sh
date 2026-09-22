@@ -336,7 +336,11 @@ provider_ensure_node() {
         log_info "Node $name already exists ($(provider_node_status "$n"))"
         gc compute instances add-metadata "$name" --zone="$CD_ZONE" \
             --metadata-from-file="$FROM_FILE" --metadata="$META" >/dev/null
-        log_info "Refreshed its metadata (applies on next boot, or on a bootstrap re-run)"
+        log_info "Refreshed its metadata"
+        # Recorded so create knows this node did not just boot. GCE runs the
+        # startup script at boot and only at boot, so a pre-existing node has
+        # read none of the metadata just written.
+        CD_EXISTING_NODES="${CD_EXISTING_NODES:-} $n"
         return 0
     fi
 

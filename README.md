@@ -1,8 +1,8 @@
 # celld-demo
 
 A test deployment of [celld](https://celld.dev) — Deno's self-hosted, distributed
-implementation of Cloudflare Durable Objects — on our own GCP infrastructure,
-with a small app deployed to it.
+implementation of Cloudflare Durable Objects ([source](https://github.com/denoland/celld))
+— on our own GCP infrastructure, with a small app deployed to it.
 
 The question this repo exists to answer: **what does celld cost and how does it
 behave on the infrastructure we already run?** Not whether celld works. That is

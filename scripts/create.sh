@@ -33,6 +33,29 @@ for n in $(node_numbers); do
 Check the console output:
   gcloud compute instances get-serial-port-output $name --zone $CD_ZONE --project $CD_PROJECT"
 
+    # A node that already existed has not re-read its metadata: GCE runs the
+    # startup script at boot and only at boot. So refreshing metadata alone
+    # fixes nothing on a node that failed to bootstrap -- there is no run in
+    # flight to succeed, to fail, or to write a marker, and the wait below
+    # would spend its whole timeout watching a node where nothing is happening.
+    #
+    # Only for pre-existing nodes. A node created moments ago is running the
+    # script already, and a second concurrent copy would race the first.
+    case " ${CD_EXISTING_NODES:-} " in
+        *" $n "*)
+            if provider_ssh "$n" "test -f /var/lib/celld-bootstrap-done" >/dev/null 2>&1; then
+                log_info "$name is already bootstrapped"
+            else
+                log_step "Running bootstrap on $name"
+                log_info "It has not completed here before, so this runs it now. Output is live:"
+                # Not backgrounded: the exit status is the answer, and the log
+                # streaming past is the thing you actually want to watch.
+                provider_ssh "$n" "sudo google_metadata_script_runner startup" 2>&1 \
+                    | sed 's/^/  /' || true
+            fi
+            ;;
+    esac
+
     log_step "Waiting for bootstrap on $name"
     # The startup script installs celld and cloudflared, which is a download
     # each, so first boot takes a couple of minutes. It writes a failure marker
