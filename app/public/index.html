@@ -124,9 +124,11 @@
   <div class="note" data-env="dev" hidden>
     <strong>The local test.</strong> Increment a few times, then stop
     <code>celld dev</code>, start it again and reload this page. The count is
-    unchanged, because it lives in <code>.celld/dev/</code>, not in the
-    process. Deploy with <code>pnpm run deploy</code> to try the real test,
-    where the VM itself goes away.
+    unchanged, because it lives in <code>.celld/dev/</code>, but that only
+    shows the state outlives the process. The real test
+    is on the deployed app (<code>pnpm run deploy</code>), where
+    <code>./celld-demo stop</code> powers off the VM itself and the count
+    still survives, because it's kept in the bucket.
   </div>
 </main>
 
