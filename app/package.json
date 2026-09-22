@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "description": "A Durable Object counter, deployed to a self-hosted celld fleet.",
+  "scripts": {
+    "dev": "celld dev",
+    "deploy": "celld deploy"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "latest",
     "esbuild": "latest"

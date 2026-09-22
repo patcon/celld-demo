@@ -288,26 +288,18 @@ provider_advertise_addr() {
     echo "$(node_name "$1").${CD_ZONE}.c.${CD_PROJECT}.internal:${CD_INTERNAL_PORT}"
 }
 
-provider_ensure_node() {
-    local n="$1" name
-    name="$(node_name "$n")"
-
-    if provider_node_exists "$n"; then
-        log_info "Node $name already exists ($(provider_node_status "$n"))"
-        return 0
-    fi
+# Everything create pushes to a node, built once so creating a node and
+# refreshing an existing one cannot drift apart. Sets $FROM_FILE and $META in
+# the caller's scope, and needs a $tmp directory to write the env file into.
+_node_metadata() {
+    local env_file="$1/celld.env"
+    storage_env > "$env_file"
 
     # The storage env and the tunnel credentials go up as metadata *files*
     # rather than --metadata values: values are comma-separated, so a secret
     # containing a comma would silently split into two keys, and JSON contains
     # plenty of them.
-    local tmp env_file
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' RETURN
-    env_file="$tmp/celld.env"
-    storage_env > "$env_file"
-
-    local from_file="startup-script=$CD_SCRIPT_DIR/bootstrap-vm.sh,celld-env=$env_file"
+    FROM_FILE="startup-script=$CD_SCRIPT_DIR/bootstrap-vm.sh,celld-env=$env_file"
     local tunnel_meta=""
     if [ "$CD_TUNNEL_MODE" = "named" ]; then
         [ -n "$CD_TUNNEL_ID" ] || die "CD_TUNNEL_MODE=named needs CD_TUNNEL_ID. Re-run: ./celld-demo init"
@@ -318,8 +310,37 @@ That file is written by \`cloudflared tunnel create\` and is the only copy.
 If it is gone, delete the tunnel and make a new one:
 
   cloudflared tunnel delete ${CD_TUNNEL_NAME:-$CD_TUNNEL_ID} && ./celld-demo init"
-        from_file="$from_file,celld-tunnel-cred=$cred"
+        FROM_FILE="$FROM_FILE,celld-tunnel-cred=$cred"
         tunnel_meta=",celld-tunnel-id=${CD_TUNNEL_ID}"
+    fi
+
+    META="celld-version=${CD_CELLD_VERSION},celld-public-port=${CD_PUBLIC_PORT},celld-internal-port=${CD_INTERNAL_PORT},celld-tunnel-mode=${CD_TUNNEL_MODE},celld-tunnel-hostname=${CD_TUNNEL_HOSTNAME}${tunnel_meta}"
+}
+
+provider_ensure_node() {
+    local n="$1" name
+    name="$(node_name "$n")"
+
+    local tmp
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' RETURN
+    _node_metadata "$tmp"
+
+    # An existing node gets its metadata refreshed rather than skipped. The
+    # startup script and every setting it reads live in metadata, so skipping
+    # left a node pinned to whatever config it was born with: fixing a bad
+    # setting meant either editing metadata by hand or deleting the instance,
+    # and "re-run create" -- the obvious thing to try -- did nothing at all.
+    #
+    # This only updates what the next boot will read. It deliberately does not
+    # restart anything, because that would make an idempotent create able to
+    # interrupt a running fleet.
+    if provider_node_exists "$n"; then
+        log_info "Node $name already exists ($(provider_node_status "$n"))"
+        gc compute instances add-metadata "$name" --zone="$CD_ZONE" \
+            --metadata-from-file="$FROM_FILE" --metadata="$META" >/dev/null
+        log_info "Refreshed its metadata (applies on next boot, or on a bootstrap re-run)"
+        return 0
     fi
 
     log_step "Creating node $name"
@@ -335,8 +356,8 @@ If it is gone, delete the tunnel and make a new one:
         --scopes=cloud-platform \
         --tags=celld-node \
         --labels=purpose=celld-demo,managed-by=celld-demo-scripts \
-        --metadata-from-file="$from_file" \
-        --metadata="celld-version=${CD_CELLD_VERSION},celld-public-port=${CD_PUBLIC_PORT},celld-internal-port=${CD_INTERNAL_PORT},celld-tunnel-mode=${CD_TUNNEL_MODE},celld-tunnel-hostname=${CD_TUNNEL_HOSTNAME}${tunnel_meta}"
+        --metadata-from-file="$FROM_FILE" \
+        --metadata="$META"
     log_info "Created $name"
 }
 

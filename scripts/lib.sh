@@ -170,6 +170,41 @@ wait_for() {
     return 1
 }
 
+# wait_for, plus an early exit for a known-failed state.
+#
+# Waiting for a success signal alone cannot tell "still working" from "died two
+# minutes ago", so a provisioning failure costs the full timeout and then gets
+# reported as a timeout -- which sends you looking at how long things take
+# instead of at the thing that broke. Given a check for the failure, both
+# answers arrive as soon as they are true.
+#
+# $4 is a command string, eval'd on each attempt before the success check.
+# Returns 0 on success, 1 on timeout, 2 if the failure check fired.
+#
+#   wait_for_or_abort "Bootstrap finished" 30 10 \
+#       "provider_ssh $n 'test -f /var/lib/celld-bootstrap-failed'" \
+#       provider_ssh "$n" "test -f /var/lib/celld-bootstrap-done"
+wait_for_or_abort() {
+    local desc="$1" attempts="$2" delay="$3" abort="$4"
+    shift 4
+    local i
+    for i in $(seq 1 "$attempts"); do
+        if "$@" >/dev/null 2>&1; then
+            [ "$i" -gt 1 ] && echo
+            log_info "$desc"
+            return 0
+        fi
+        if eval "$abort" >/dev/null 2>&1; then
+            [ "$i" -gt 1 ] && echo
+            return 2
+        fi
+        printf '.'
+        sleep "$delay"
+    done
+    echo
+    return 1
+}
+
 # --- local.env -------------------------------------------------------------
 
 # Write a single setting into local.env, updating the line if it is already

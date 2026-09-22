@@ -99,7 +99,8 @@
 <body>
 <main>
   <h1>celld demo</h1>
-  <p class="sub">One Durable Object, on our own VMs, with its state in our own bucket.</p>
+  <p class="sub" data-env="deployed">One Durable Object, on our own VMs, with its state in our own bucket.</p>
+  <p class="sub" data-env="dev" hidden>One Durable Object, running under <code>celld dev</code>, with its state in <code>.celld/dev/</code> on this machine.</p>
 
   <div class="card">
     <div class="count" id="count" data-loading="true">—</div>
@@ -113,15 +114,33 @@
     <div class="err" id="err"></div>
   </div>
 
-  <div class="note">
+  <div class="note" data-env="deployed">
     <strong>The actual test.</strong> Increment a few times, then run
     <code>./celld-demo stop</code> and <code>./celld-demo start</code> and
     reload this page. The VM that served these requests was powered off in
     between, and the count is unchanged: none of this state was ever on it.
   </div>
+
+  <div class="note" data-env="dev" hidden>
+    <strong>The local test.</strong> Increment a few times, then stop
+    <code>celld dev</code>, start it again and reload this page. The count is
+    unchanged, because it lives in <code>.celld/dev/</code>, not in the
+    process. Deploy with <code>pnpm run deploy</code> to try the real test,
+    where the VM itself goes away.
+  </div>
 </main>
 
 <script type="module">
+  // The same static files are served by `celld dev` and by the fleet, so the
+  // page works out which one it is from where it was loaded. Deployed is the
+  // default in the markup, so that is what shows if this never runs.
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+  if (local) {
+    for (const node of document.querySelectorAll("[data-env]")) {
+      node.hidden = node.dataset.env !== "dev";
+    }
+  }
+
   const el = {
     count: document.getElementById("count"),
     first: document.getElementById("first"),

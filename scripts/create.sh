@@ -35,12 +35,38 @@ Check the console output:
 
     log_step "Waiting for bootstrap on $name"
     # The startup script installs celld and cloudflared, which is a download
-    # each, so first boot takes a couple of minutes.
-    wait_for "Bootstrap finished" 30 10 \
-        provider_ssh "$n" "test -f /var/lib/celld-bootstrap-done" \
-        || die "Bootstrap did not finish after 5 minutes on $name.
+    # each, so first boot takes a couple of minutes. It writes a failure marker
+    # if it dies, so a broken bootstrap stops the wait instead of burning the
+    # timeout and then being reported as slowness.
+    # `|| RC=$?` rather than a bare call: set -e would exit on the non-zero
+    # return before the case below ever ran, turning both failure modes back
+    # into the silent death this is meant to replace.
+    RC=0
+    wait_for_or_abort "Bootstrap finished" 30 10 \
+        "provider_ssh $n 'test -f /var/lib/celld-bootstrap-failed'" \
+        provider_ssh "$n" "test -f /var/lib/celld-bootstrap-done" || RC=$?
+    case "$RC" in
+        0) ;;
+        2) log_error "Bootstrap FAILED on $name. Last 30 lines of its log:"
+           provider_ssh "$n" "sudo tail -30 /var/log/celld-bootstrap.log" 2>/dev/null | sed 's/^/  /' || true
+           die "Provisioning failed on $name.
+
+Fix the cause, then re-run the startup script on the node:
+  ./celld-demo ssh $n -- sudo google_metadata_script_runner startup
+
+If the cause was a setting, change it and re-push it to the node first:
+  ./celld-demo create    (updates metadata on existing nodes)" ;;
+        *) die "Bootstrap did not finish after 5 minutes on $name, and did not
+report a failure either -- so it is either still running or it died before it
+could say so (a node bootstrapped by an older copy of these scripts cannot
+report failure at all).
+
 Read the log:
-  ./celld-demo ssh $n -- sudo tail -50 /var/log/celld-bootstrap.log"
+  ./celld-demo ssh $n -- sudo tail -50 /var/log/celld-bootstrap.log
+
+If it died, re-run the startup script once the cause is fixed:
+  ./celld-demo ssh $n -- sudo google_metadata_script_runner startup" ;;
+    esac
 
     log_step "Waiting for celld to report healthy on $name"
     # Health is 503 until the node has joined the fleet and settled, so this

@@ -15,8 +15,28 @@ set -euo pipefail
 exec > >(tee -a /var/log/celld-bootstrap.log) 2>&1
 
 DONE_MARKER=/var/lib/celld-bootstrap-done
+FAIL_MARKER=/var/lib/celld-bootstrap-failed
 CELLD_HOME=/opt/celld
 CELLD_STATE=/var/lib/celld
+
+# `set -e` alone exits quietly: the log just stops, with the failing command's
+# own message as the last line and nothing saying the script died. From the
+# outside that is indistinguishable from a slow boot, so create sat through its
+# full timeout and then reported the timeout instead of the actual failure.
+#
+# The marker is what makes the failure legible to another machine. create polls
+# for it alongside the done-marker and gives up the moment it appears.
+on_err() {
+    local line="$1"
+    echo "=== BOOTSTRAP FAILED at line $line ==="
+    { echo "failed at line $line on $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+      echo "see /var/log/celld-bootstrap.log"; } > "$FAIL_MARKER" 2>/dev/null || true
+}
+trap 'on_err $LINENO' ERR
+
+# A retry has to start from a clean slate, or a stale marker from the previous
+# attempt makes a successful run still look failed.
+rm -f "$FAIL_MARKER"
 
 echo "=== celld bootstrap $(date -u '+%Y-%m-%d %H:%M:%S UTC') ==="
 
