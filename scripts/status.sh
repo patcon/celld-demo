@@ -40,23 +40,27 @@ for n in $(node_numbers); do
 
     ip="$(provider_internal_ip "$n")"
     # The operator API is on the internal listener, which binds the VPC address
-    # rather than loopback, so the node has to curl its own internal IP.
+    # rather than loopback, so the node has to curl its own internal IP. Only
+    # the curl runs there; the JSON comes back here to be read.
     # shellcheck disable=SC2086
-    provider_ssh "$n" "curl -s $CD_CURL_DEADLINE http://${ip}:${CD_INTERNAL_PORT}/state | python3 -c '
+    provider_ssh "$n" "curl -s $CD_CURL_DEADLINE http://${ip}:${CD_INTERNAL_PORT}/state" 2>/dev/null \
+        | python3 -c '
 import json, sys
 try:
     s = json.load(sys.stdin)
 except Exception:
-    print(\"  state          (no response from the operator API)\"); raise SystemExit
-def g(k, d=0): return s.get(k, d)
-print(\"  owned cells    %s\" % g(\"owned_cells\"))
-print(\"  resident cells %s\" % g(\"resident_cells\"))
-print(\"  rss            %.0f MB\" % (g(\"rss_bytes\")/1048576.0))
-print(\"  cpu            %.1f%%\" % (g(\"cpu_percent_x100\")/100.0))
-iso = (s.get(\"deployment\") or {}).get(\"isolates\")
+    print("  state          (could not read the operator API)"); raise SystemExit
+# resident_cells and cpu_percent_x100 exist only inside node_load; read from
+# the top level they were always 0. occupied is the same count as the former.
+load = s.get("node_load") or {}
+print("  owned cells    %s" % s.get("owned_cells", 0))
+print("  resident cells %s" % s.get("occupied", 0))
+print("  rss            %.0f MB" % (s.get("rss_bytes", 0) / 1048576.0))
+print("  cpu            %.1f%%" % (load.get("cpu_percent_x100", 0) / 100.0))
+iso = (s.get("deployment") or {}).get("isolates")
 if iso is not None:
-    print(\"  isolates       %s\" % (len(iso) if isinstance(iso, (list, dict)) else iso))
-'" 2>/dev/null || echo "  state          (could not read the operator API)"
+    print("  isolates       %s" % (len(iso) if isinstance(iso, (list, dict)) else iso))
+'
 done
 
 log_step "Ingress"
