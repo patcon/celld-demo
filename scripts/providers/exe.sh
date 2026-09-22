@@ -55,5 +55,6 @@ provider_ssh()              { _exe_todo; }
 provider_ssh_interactive()  { _exe_todo; }
 provider_list_nodes()       { _exe_todo; }
 provider_bucket_usage()     { _exe_todo; }
+provider_cell_owners()      { _exe_todo; }
 provider_teardown()         { _exe_todo; }
 provider_delete_bucket()    { _exe_todo; }

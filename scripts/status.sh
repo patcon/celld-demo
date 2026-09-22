@@ -20,6 +20,10 @@ echo
 
 provider_list_nodes 2>/dev/null | sed 's/^/  /' || log_warn "  (could not list instances)"
 
+# Read once for the whole fleet: the bucket, not any one node, is what knows
+# which node owns which cell.
+OWNERS="$(provider_cell_owners)"
+
 for n in $(node_numbers); do
     name="$(node_name "$n")"
     status="$(provider_node_status "$n")"
@@ -50,17 +54,31 @@ try:
     s = json.load(sys.stdin)
 except Exception:
     print("  state          (could not read the operator API)"); raise SystemExit
+name, owners = sys.argv[1], sys.argv[2]
 # resident_cells and cpu_percent_x100 exist only inside node_load; read from
 # the top level they were always 0. occupied is the same count as the former.
 load = s.get("node_load") or {}
-print("  owned cells    %s" % s.get("owned_cells", 0))
-print("  resident cells %s" % s.get("occupied", 0))
+def split(counts): return "  (%s)" % ", ".join("%s: %s" % kv for kv in sorted(counts.items())) if counts else ""
+# Resident cells are listed as Class:id. Owned ones are only counted, so their
+# classes come from the ownership records in the bucket (provider_cell_owners);
+# without those, the count stands alone.
+resident = {}
+for c in s.get("residents", []):
+    k = c.split(":", 1)[0]
+    resident[k] = resident.get(k, 0) + 1
+owned = {}
+for line in owners.splitlines():
+    node, cls, n = line.split()
+    if node == name:
+        owned[cls] = int(n)
+print("  owned cells    %s%s" % (s.get("owned_cells", 0), split(owned)))
+print("  resident cells %s%s" % (s.get("occupied", 0), split(resident)))
 print("  rss            %.0f MB" % (s.get("rss_bytes", 0) / 1048576.0))
 print("  cpu            %.1f%%" % (load.get("cpu_percent_x100", 0) / 100.0))
 iso = (s.get("deployment") or {}).get("isolates")
 if iso is not None:
     print("  isolates       %s" % (len(iso) if isinstance(iso, (list, dict)) else iso))
-'
+' "$name" "$OWNERS"
 done
 
 log_step "Ingress"

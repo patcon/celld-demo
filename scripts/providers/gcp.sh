@@ -418,6 +418,57 @@ provider_bucket_usage() {
         || echo "  (could not read $CD_BUCKET)"
 }
 
+# Which node owns each cell, as "<node name> <Class> <count>" lines. A node's
+# /state only counts the cells it owns, so this is the one place their classes
+# come from. It costs a read per cell, so past CD_OWNER_SCAN_MAX cells it prints
+# nothing and status falls back to counts alone.
+provider_cell_owners() {
+    local token
+    token="$(gc auth print-access-token 2>/dev/null)" || return 0
+    python3 - "${CD_BUCKET#gs://}" "$token" "${CD_OWNER_SCAN_MAX:-500}" <<'PY'
+import json, subprocess, sys, urllib.parse
+from concurrent.futures import ThreadPoolExecutor
+bucket, token, cap = sys.argv[1], sys.argv[2], int(sys.argv[3])
+api = "https://storage.googleapis.com/storage/v1/b/%s/o" % bucket
+# curl rather than urllib: python.org builds on macOS ship without a CA bundle,
+# and curl uses the system one.
+def get(url):
+    return subprocess.run(["curl", "-sSf", "-m", "10", "-H", "Authorization: Bearer " + token, url],
+                          check=True, capture_output=True).stdout
+def names(prefix, glob):
+    out, page = [], None
+    while True:
+        q = {"prefix": prefix, "matchGlob": glob, "fields": "items/name,nextPageToken"}
+        if page: q["pageToken"] = page
+        r = json.loads(get(api + "?" + urllib.parse.urlencode(q)))
+        out += [i["name"] for i in r.get("items", [])]
+        page = r.get("nextPageToken")
+        if not page or len(out) > cap: return out
+def body(name):
+    return json.loads(get("%s/%s?alt=media" % (api, urllib.parse.quote(name, safe=""))))
+try:
+    owns = names("cells/", "cells/*/own.json")
+    if len(owns) > cap: raise SystemExit
+    with ThreadPoolExecutor(16) as pool:
+        # A lease names its node by internal DNS address, whose first label is
+        # the instance name. Stale leases from a previous process are harmless:
+        # nothing owns a cell under their ids any more.
+        host = {}
+        for lease in pool.map(body, names("nodes/", "nodes/*.json")):
+            host[lease["node"]] = lease.get("addr", "").split(".", 1)[0]
+        counts = {}
+        for name, rec in zip(owns, pool.map(body, owns)):
+            if rec.get("node"):  # null: released, owned by nobody
+                key = (host.get(rec["node"], rec["node"]), name.split("/")[1].split(":", 1)[0])
+                counts[key] = counts.get(key, 0) + 1
+    for (node, cls), n in sorted(counts.items()):
+        print(node, cls, n)
+except Exception:
+    pass
+    pass
+PY
+}
+
 # Everything that is not per-node. Called by destroy after the VMs are gone.
 provider_teardown() {
     local sa
