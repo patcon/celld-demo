@@ -292,6 +292,14 @@ echo "to make create repeatable: celld has had upgrades that needed the whole"
 echo "fleet stopped rather than a rolling restart."
 CELLD_VERSION="$(ask "celld version (blank for latest)" "${CD_CELLD_VERSION:-}")"
 
+# celld's installer requires a `v`-prefixed tag and rejects anything else with
+# "release version must be a tag such as v0.0.1" -- on the VM, during boot,
+# where nobody sees it until they go reading the bootstrap log. Typing 0.5.1
+# rather than v0.5.1 is the obvious mistake to make, so accept it.
+case "$CELLD_VERSION" in
+    [0-9]*) CELLD_VERSION="v$CELLD_VERSION"; log_info "Reading that as $CELLD_VERSION" ;;
+esac
+
 # --- Write -----------------------------------------------------------------
 
 log_step "Writing local.env"

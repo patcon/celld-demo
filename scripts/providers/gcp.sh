@@ -217,11 +217,24 @@ provider_ensure_bucket() {
 
     # Scoped to this one bucket, per celld's security doc: bucket credentials
     # are fleet control, so they get the narrowest grant that works.
+    #
+    # Retried, because "visible to the IAM API" and "resolvable as a principal
+    # by Cloud Storage" are two different clocks, and the second one lags by up
+    # to a minute after the account is created. Storage reports the gap as
+    # `HTTPError 400: Service account ... does not exist`, which reads like the
+    # create failed when it actually succeeded -- so polling the describe above
+    # is not enough on its own. Only the binding itself tells you it is ready.
     log_step "Granting $CD_SERVICE_ACCOUNT objectAdmin on gs://$name"
-    gc storage buckets add-iam-policy-binding "gs://$name" \
-        --member="serviceAccount:$sa" \
-        --role=roles/storage.objectAdmin >/dev/null
-    log_info "Granted"
+    wait_for "Granted" 24 5 \
+        gc storage buckets add-iam-policy-binding "gs://$name" \
+            --member="serviceAccount:$sa" \
+            --role=roles/storage.objectAdmin \
+        || die "Could not grant objectAdmin on gs://$name to $sa after two minutes.
+
+If this still says the service account does not exist, check it is really there:
+  gcloud --project $CD_PROJECT iam service-accounts describe $sa
+
+Re-running './celld-demo create' is safe and picks up where this left off."
 }
 
 # Nothing is needed for ingress: cloudflared dials out, and celld's public

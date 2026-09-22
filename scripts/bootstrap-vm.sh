@@ -63,6 +63,13 @@ echo "node=$NODE_NAME internal=$INTERNAL_IP advertise=$ADVERTISE tunnel=$TUNNEL_
 echo "--- installing celld"
 export CELLD_INSTALL_ROOT="$CELLD_HOME"
 if [ -n "$CELLD_VERSION" ]; then
+    # The installer takes a tag, not a version number, and dies on the
+    # difference. Normalised here as well as in init, because this value can
+    # also arrive by hand-editing local.env or the instance metadata, and a
+    # failure at this point costs a full instance rebuild to retry.
+    case "$CELLD_VERSION" in
+        [0-9]*) CELLD_VERSION="v$CELLD_VERSION" ;;
+    esac
     export CELLD_VERSION
 fi
 curl -fsSL https://celld.dev/install.sh | sh
