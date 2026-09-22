@@ -1,5 +1,5 @@
 /**
- * A counter that lives in one Durable Object.
+ * A counter that lives in a Durable Object, one per ?cell= name.
  *
  * The interesting property is not the counting. It is that the count is held
  * in a SQLite database inside a single-threaded actor, that the actor's
@@ -68,6 +68,8 @@ export class Counter {
   }
 }
 
+const CELL_NAME = /^[a-z0-9-]{1,32}$/;
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -78,10 +80,16 @@ export default {
       return new Response("Not found", { status: 404 });
     }
 
-    // One cell, named "demo". idFromName is deterministic across the fleet, so
-    // every node routes to the same actor no matter which one took the
-    // request -- that routing is the thing celld is actually doing for us.
-    const id = env.COUNTER.idFromName("demo");
+    // One cell per name, taken from ?cell= and defaulting to "demo".
+    // idFromName is deterministic across the fleet, so every node routes the
+    // same name to the same actor no matter which one took the request -- that
+    // routing is the thing celld is actually doing for us. Every new name is a
+    // new database in the bucket, so names are kept short and plain.
+    const name = url.searchParams.get("cell") ?? "demo";
+    if (!CELL_NAME.test(name)) {
+      return new Response("cell must match " + CELL_NAME, { status: 400 });
+    }
+    const id = env.COUNTER.idFromName(name);
     return env.COUNTER.get(id).fetch(request);
   },
 };

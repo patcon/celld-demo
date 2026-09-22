@@ -106,7 +106,7 @@
     <div class="count" id="count" data-loading="true">—</div>
     <button id="inc">Increment</button>
     <dl>
-      <dt>cell</dt><dd>COUNTER / "demo"</dd>
+      <dt>cell</dt><dd id="cell">COUNTER / "demo"</dd>
       <dt>first seen</dt><dd id="first">—</dd>
       <dt>last write</dt><dd id="last">—</dd>
       <dt>round trip</dt><dd id="rtt">—</dd>
@@ -191,8 +191,21 @@
     }
   }
 
-  el.inc.addEventListener("click", () => call("/api/increment", "POST"));
-  call("/api/state", "GET");
+  // ?cell=foo on the page picks which cell it talks to; each name is its own
+  // Durable Object with its own count. No name means the "demo" cell, and the
+  // address bar is rewritten to say so. That happens here rather than in the
+  // Worker because the page is a static asset the Worker never sees.
+  const params = new URLSearchParams(location.search);
+  if (!params.has("cell")) {
+    params.set("cell", "demo");
+    history.replaceState(null, "", `${location.pathname}?${params}${location.hash}`);
+  }
+  const cell = params.get("cell");
+  const query = `?cell=${encodeURIComponent(cell)}`;
+  document.getElementById("cell").textContent = `COUNTER / "${cell}"`;
+
+  el.inc.addEventListener("click", () => call(`/api/increment${query}`, "POST"));
+  call(`/api/state${query}`, "GET");
 </script>
 </body>
 </html>
