@@ -99,6 +99,22 @@ else
     fi
 fi
 
+# ADC login takes its quota project from whatever `gcloud config` currently
+# points at, which is usually not the project chosen above -- so it warns about
+# a project that has nothing to do with this fleet, and the warning names a
+# permission you may well hold on the right one. Point it at the project we
+# actually use.
+#
+# Nothing here needs a quota project: Cloud Storage bills operations to the
+# bucket's own project, not the caller's. This is only to keep the login from
+# reporting a problem about an unrelated project. Best effort, hence the
+# warn-and-continue: it needs serviceusage.services.use on $PROJECT.
+if gcloud auth application-default print-access-token >/dev/null 2>&1; then
+    gcloud auth application-default set-quota-project "$PROJECT" >/dev/null 2>&1 \
+        && log_info "ADC quota project set to '$PROJECT'" \
+        || log_warn "Could not set the ADC quota project to '$PROJECT'. Harmless: GCS bills the bucket's project."
+fi
+
 # --- Zone and size ---------------------------------------------------------
 
 log_step "Zone"
