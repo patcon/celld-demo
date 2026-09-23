@@ -31,11 +31,24 @@ echo
 echo "  bucket  $CD_BUCKET"
 provider_bucket_usage | sed 's/^/  /'
 
-log_step "Deleting nodes 1..$CD_NODE_COUNT"
-echo "This deletes these VMs and their boot disks:"
+log_step "What this will do"
+# Red X for deleted, green check for kept, so the bucket's fate is visible at
+# a glance instead of implied by its absence from a list.
+DEL="\033[0;31m✗ delete\033[0m"
+KEEP="\033[0;32m✓ keep  \033[0m"
+ASK="\033[1;33m? ask   \033[0m"
 for n in $(node_numbers); do
-    echo "  $(node_name "$n")  ($(provider_node_status "$n"))"
+    echo -e "  $DEL  $(node_name "$n") + boot disk  ($(provider_node_status "$n"))"
 done
+echo -e "  $DEL  service account $CD_SERVICE_ACCOUNT"
+echo -e "  $DEL  celld-internal firewall rule, if present"
+if [ "$OFFER_BUCKET" = true ]; then
+    echo -e "  $ASK  $CD_BUCKET  (separate confirmation after this one)"
+else
+    echo -e "  $KEEP  $CD_BUCKET  (every cell's database; still bills for storage)"
+    echo
+    echo "  Re-run with --bucket to delete the bucket too."
+fi
 echo
 read -r -p "$(echo -e "\033[0;31mType the instance prefix to confirm:\033[0m $CD_INSTANCE_PREFIX ")" CONFIRM </dev/tty
 [ "$CONFIRM" = "$CD_INSTANCE_PREFIX" ] || die "Confirmation did not match. Nothing was deleted."
